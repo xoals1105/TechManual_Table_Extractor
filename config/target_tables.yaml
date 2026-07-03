@@ -1,0 +1,17 @@
+# 이 파일은 GUI(규칙 저장)에서 자동 생성되었습니다.
+# 점수: 헤더 일치율 x50, 제목 키워드 +30, 열 개수 +10 → threshold 이상이면 추출
+output:
+  include_title: false
+rules:
+- name: 부품목록표
+  expected_headers:
+  - 품명
+  - 규격
+  - 수량
+  - 비고
+  title_keywords:
+  - 부품 목록
+  - 부품목록
+  - 수리부속
+  expected_cols: 4
+  threshold: 60.0
