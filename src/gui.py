@@ -16,10 +16,13 @@ import sys
 from pathlib import Path
 
 import yaml
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -33,6 +36,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -43,10 +47,248 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "target_tables.yaml"
 OUTPUT_DIR = ROOT / "output"
 
+HELP_HTML = """
+<h2>사용 순서</h2>
+<ol>
+<li><b>한글 파일 선택</b> — 추출할 .hwp / .hwpx 파일 또는 폴더를 고릅니다.</li>
+<li><b>모든 표 추출</b> — 처음에는 이 모드를 선택하고 [추출 실행]을 누릅니다.
+    [결과 폴더 열기]로 엑셀을 열어, 뽑고 싶은 표의 <b>맨 윗줄(1행)</b>을 확인합니다.</li>
+<li><b>규칙 추가</b> — 아래 규칙 표에서 [규칙 추가]를 누르고
+    「표 1행 헤더」에 쉼표로 입력합니다. (예: <code>품명, 규격, 수량</code>)
+    입력 후 [규칙 저장]을 누릅니다.</li>
+<li><b>규칙에 맞는 표만 추출</b> — 모드를 바꾼 뒤 [추출 실행]합니다.</li>
+<li><b>결과 확인</b> — <code>output</code> 폴더에 <code>&lt;파일명&gt;_tables.xlsx</code> 가 생성됩니다.
+    표 1개 = 엑셀 시트 1개입니다.</li>
+</ol>
+
+<h2>규칙 항목 설명</h2>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+<tr><th>항목</th><th>의미</th><th>어디서 확인</th><th>필수</th></tr>
+<tr>
+  <td><b>규칙 이름</b></td>
+  <td>엑셀 시트 이름에 붙는 이름입니다. (예: <code>부품목록표_0</code>)</td>
+  <td>사용자가 알아보기 쉬운 이름을 짓습니다.</td>
+  <td>선택</td>
+</tr>
+<tr>
+  <td><b>표 1행 헤더</b></td>
+  <td>표 <b>맨 윗줄</b>에 있는 열 제목입니다. 선별의 핵심 조건입니다.</td>
+  <td>「모든 표 추출」 결과 엑셀의 1행, 또는 한글 문서에서 표 첫 줄</td>
+  <td><b>필수</b></td>
+</tr>
+<tr>
+  <td><b>제목 키워드</b></td>
+  <td>표 <b>바로 위</b> 문장·캡션에 나오는 단어입니다. 비슷한 표를 구분할 때 씁니다.</td>
+  <td>한글에서 표 위 문단 (예: "부품 목록", "표 3-1")</td>
+  <td>선택</td>
+</tr>
+<tr>
+  <td><b>열 개수</b></td>
+  <td>표가 몇 열인지 나타내는 숫자입니다.</td>
+  <td>엑셀 1행의 열 개수 (예: 4)</td>
+  <td>선택</td>
+</tr>
+<tr>
+  <td><b>기준 점수</b></td>
+  <td>아래 점수 계산 결과가 이 값 <b>이상</b>이면 해당 규칙으로 표를 뽑습니다.</td>
+  <td>기본값 60. 조정 방법은 아래 참고</td>
+  <td>기본 60</td>
+</tr>
+</table>
+
+<p><b>참고</b></p>
+<ul>
+<li>표 <b>2행 이하 내용</b>(데이터)은 규칙에 넣지 않습니다. <b>1행 헤더만</b> 넣으세요.</li>
+<li>규칙을 문서 안 표 순서대로 적을 필요는 없습니다.</li>
+<li>헤더 입력 시 공백은 무시됩니다. (<code>품 명</code> = <code>품명</code>)</li>
+<li>DRM이 걸린 .hwp 파일은 <b>한글 프로그램이 설치된 PC</b>에서만 처리됩니다.</li>
+</ul>
+
+<h2>기준 점수 (threshold) 사용법</h2>
+<p>문서마다 표 형태가 조금씩 달라도 뽑을 수 있도록, 여러 조건을 합산한 <b>점수</b>로 표를 고릅니다.</p>
+
+<h3>점수 계산</h3>
+<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+<tr><th>조건</th><th>점수</th><th>설명</th></tr>
+<tr><td>헤더 일치</td><td>최대 50</td>
+    <td>입력한 헤더 중 표 1행과 일치하는 비율 × 50<br>
+    예) 4개 중 4개 일치 → 50점 / 3개 일치 → 37.5점</td></tr>
+<tr><td>제목 키워드</td><td>+30</td><td>키워드 중 하나라도 표 위·캡션에 있으면</td></tr>
+<tr><td>열 개수</td><td>+10</td><td>입력한 열 개수와 표 열 수가 같으면</td></tr>
+</table>
+<p>합계 ≥ <b>기준 점수</b> 이면 그 규칙으로 표가 선정됩니다.</p>
+
+<h3>점수 예시 (기준 60일 때)</h3>
+<ul>
+<li>헤더 4/4 전부 일치 → <b>50점</b> → 기준 60 <b>미달</b> (제목 키워드나 열 개수를 추가하거나, 기준을 50으로 내리세요)</li>
+<li>헤더 4/4 + 열 개수 4 → <b>60점</b> → 선정</li>
+<li>헤더 4/4 + 제목 키워드 → <b>80점</b> → 선정</li>
+</ul>
+
+<h3>기준 점수 조정</h3>
+<ul>
+<li><b>너무 많은 표가 뽑힐 때</b> → 70 ~ 80 으로 올립니다.</li>
+<li><b>원하는 표가 빠질 때</b> → 40 ~ 50 으로 내리거나, 헤더·제목 키워드를 보강합니다.</li>
+<li><b>헤더만 넣고 쓸 때</b> → 기준 점수를 <b>50</b>으로 두는 것이 일반적입니다.</li>
+</ul>
+<p>실행 후 <code>output\\extract.log</code> 에 표마다 점수와 선정 이유가 기록됩니다.
+결과가 이상하면 이 로그를 확인하세요.</p>
+"""
+
+# (열 헤더 라벨, 셀 툴팁)
+RULE_COLUMN_SPECS: list[tuple[str, str]] = [
+    (
+        "규칙 이름 (선택)",
+        "엑셀 시트 이름에 쓰입니다. 비워 두면 '규칙1', '규칙2' … 로 자동 지정됩니다.",
+    ),
+    (
+        "표 1행 헤더 (필수)",
+        "엑셀·한글에서 본 표 맨 윗줄을 쉼표로 입력하세요.\n"
+        "예: 표 1행이 '품명 | 규격 | 수량' 이면 → 품명, 규격, 수량\n"
+        "공백은 무시됩니다. ('품 명' = '품명')",
+    ),
+    (
+        "제목 키워드 (선택)",
+        "표 바로 위 문장·캡션에 있는 단어를 쉼표로 입력합니다.\n"
+        "헤더만으로 표를 구분할 수 있으면 비워도 됩니다.\n"
+        "예: 부품 목록, 부품목록",
+    ),
+    (
+        "열 개수 (선택)",
+        "표가 몇 열인지 숫자로 입력합니다. (예: 4)\n"
+        "헤더가 비슷한 표가 여러 개일 때 보조로 사용합니다. 비워도 됩니다.",
+    ),
+    (
+        "기준 점수",
+        "이 점수 이상이면 해당 규칙으로 표를 뽑습니다. 기본값 60.\n"
+        "점수 계산: 헤더 일치(최대 50) + 제목 키워드(+30) + 열 개수(+10)\n"
+        "너무 많이 뽑히면 70~80 으로 올리고, 빠지면 40~50 으로 내립니다.",
+    ),
+]
+
 CONFIG_HEADER = """\
 # 이 파일은 GUI(규칙 저장)에서 자동 생성되었습니다.
 # 점수: 헤더 일치율 x50, 제목 키워드 +30, 열 개수 +10 → threshold 이상이면 추출
 """
+
+
+class _TitleBarButton(QPushButton):
+    """제목 표시줄용 작은 버튼 (최소화/최대화/닫기/?)."""
+
+    def __init__(self, text: str, *, close: bool = False, narrow: bool = False):
+        super().__init__(text)
+        w = 36 if narrow else 46
+        self.setFixedSize(w, 32)
+        self.setFlat(True)
+        if close:
+            self.setStyleSheet(
+                "QPushButton { border: none; background: transparent; }"
+                "QPushButton:hover { background: #e81123; color: white; }"
+            )
+        else:
+            self.setStyleSheet(
+                "QPushButton { border: none; background: transparent; }"
+                "QPushButton:hover { background: #e5e5e5; }"
+            )
+
+
+class TitleBar(QWidget):
+    """Windows 스타일 커스텀 제목 표시줄 — ? 는 최소화 버튼 왼쪽."""
+
+    def __init__(self, window: QMainWindow, *, on_help):
+        super().__init__(window)
+        self._window = window
+        self._drag_pos: QPoint | None = None
+        self.setFixedHeight(32)
+        self.setStyleSheet("background: #f0f0f0;")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._title = QLabel(window.windowTitle())
+        self._title.setStyleSheet("background: transparent;")
+        layout.addWidget(self._title)
+        layout.addStretch(1)
+
+        btn_help = _TitleBarButton("?", narrow=True)
+        btn_help.setToolTip("사용 방법 — 프로그램 사용법, 규칙 항목, 기준 점수 조정")
+        btn_help.clicked.connect(on_help)
+        layout.addWidget(btn_help)
+
+        btn_min = _TitleBarButton("─")
+        btn_min.setToolTip("최소화")
+        btn_min.clicked.connect(window.showMinimized)
+        layout.addWidget(btn_min)
+
+        self._btn_max = _TitleBarButton("□")
+        self._btn_max.setToolTip("최대화")
+        self._btn_max.clicked.connect(self._toggle_maximize)
+        layout.addWidget(self._btn_max)
+
+        btn_close = _TitleBarButton("✕", close=True)
+        btn_close.setToolTip("닫기")
+        btn_close.clicked.connect(window.close)
+        layout.addWidget(btn_close)
+
+    def _toggle_maximize(self) -> None:
+        if self._window.isMaximized():
+            self._window.showNormal()
+            self._btn_max.setText("□")
+        else:
+            self._window.showMaximized()
+            self._btn_max.setText("❐")
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            target = self.childAt(event.position().toPoint())
+            if isinstance(target, QPushButton):
+                return super().mousePressEvent(event)
+            self._drag_pos = event.globalPosition().toPoint() - self._window.pos()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self._window.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._drag_pos = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._toggle_maximize()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+class HelpDialog(QDialog):
+    """사용 방법 상세 안내 창."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("사용 방법")
+        self.resize(620, 520)
+
+        layout = QVBoxLayout(self)
+        browser = QTextBrowser()
+        browser.setHtml(HELP_HTML)
+        browser.setOpenExternalLinks(False)
+        layout.addWidget(browser)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        close_btn = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_btn:
+            close_btn.setText("닫기")
+        layout.addWidget(buttons)
 
 
 class GuiLogHandler(logging.Handler):
@@ -131,29 +373,43 @@ class ExtractWorker(QThread):
                     pass
 
 
-RULE_COLUMNS = ["규칙 이름", "표 1행 헤더 (쉼표로 구분)", "제목 키워드 (쉼표, 선택)",
-                "열 개수 (선택)", "기준 점수"]
-
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("기술교범 표 추출기")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.resize(920, 720)
         self.worker: ExtractWorker | None = None
 
+        shell = QWidget()
+        shell.setObjectName("appShell")
+        shell.setStyleSheet("#appShell { border: 1px solid #ababab; }")
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+
+        self._title_bar = TitleBar(self, on_help=self.show_help)
+        shell_layout.addWidget(self._title_bar)
+
         central = QWidget()
-        self.setCentralWidget(central)
+        shell_layout.addWidget(central, 1)
+        self.setCentralWidget(shell)
+
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(8, 8, 8, 8)
 
         # --- 1. 입력 선택 ---
         input_box = QGroupBox("1. 한글 파일 선택")
         input_layout = QHBoxLayout(input_box)
         self.input_edit = QLineEdit()
         self.input_edit.setPlaceholderText("추출할 .hwp/.hwpx 파일 또는 폴더를 선택하세요")
+        self.input_edit.setToolTip("처리할 한글 파일 하나, 또는 .hwp/.hwpx 가 들어 있는 폴더를 선택하세요.")
         btn_file = QPushButton("파일 선택...")
+        btn_file.setToolTip("한글 파일(.hwp, .hwpx) 하나를 선택합니다.")
         btn_file.clicked.connect(self.pick_file)
         btn_dir = QPushButton("폴더 선택...")
+        btn_dir.setToolTip("폴더 안의 모든 .hwp / .hwpx 파일을 한꺼번에 처리합니다.")
         btn_dir.clicked.connect(self.pick_dir)
         input_layout.addWidget(self.input_edit, 1)
         input_layout.addWidget(btn_file)
@@ -164,9 +420,16 @@ class MainWindow(QMainWindow):
         mode_box = QGroupBox("2. 추출 방식")
         mode_layout = QHBoxLayout(mode_box)
         self.radio_all = QRadioButton("모든 표 추출 (문서 구조 확인용)")
+        self.radio_all.setToolTip(
+            "문서 안의 모든 표를 엑셀로 뽑습니다.\n"
+            "처음에 이 모드로 실행해 표 1행 헤더를 확인한 뒤 규칙을 만드세요.")
         self.radio_rules = QRadioButton("아래 규칙에 맞는 표만 추출")
+        self.radio_rules.setToolTip("아래 규칙 표에 입력한 조건에 맞는 표만 엑셀로 뽑습니다.")
         self.radio_all.setChecked(True)
         self.chk_title = QCheckBox("엑셀 1행에 표 제목 넣기")
+        self.chk_title.setToolTip(
+            "체크: 엑셀 1행에 표 제목, 3행부터 표 내용\n"
+            "해제: 1행부터 표 내용만 (기본 권장)")
         mode_layout.addWidget(self.radio_all)
         mode_layout.addWidget(self.radio_rules)
         mode_layout.addStretch(1)
@@ -175,10 +438,15 @@ class MainWindow(QMainWindow):
 
         # --- 3. 규칙 편집기 ---
         rules_box = QGroupBox("3. 표 선별 규칙 (규칙에 맞는 표만 추출할 때 사용)")
+        rules_box.setToolTip("각 열 헤더에 마우스를 올리면 입력 방법을 볼 수 있습니다.")
         rules_layout = QVBoxLayout(rules_box)
-        self.table = QTableWidget(0, len(RULE_COLUMNS))
-        self.table.setHorizontalHeaderLabels(RULE_COLUMNS)
+        self.table = QTableWidget(0, len(RULE_COLUMN_SPECS))
+        for col, (label, tip) in enumerate(RULE_COLUMN_SPECS):
+            header_item = QTableWidgetItem(label)
+            header_item.setToolTip(tip)
+            self.table.setHorizontalHeaderItem(col, header_item)
         header = self.table.horizontalHeader()
+        header.setToolTip("열 이름에 마우스를 올리면 각 항목 설명이 표시됩니다.")
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -188,18 +456,25 @@ class MainWindow(QMainWindow):
 
         rule_btns = QHBoxLayout()
         btn_add = QPushButton("규칙 추가")
+        btn_add.setToolTip("새 규칙 행을 추가합니다. 표 1행 헤더(필수)를 입력하세요.")
         btn_add.clicked.connect(self.add_rule_row)
         btn_del = QPushButton("선택 규칙 삭제")
+        btn_del.setToolTip("표에서 선택한 규칙 행을 삭제합니다.")
         btn_del.clicked.connect(self.delete_rule_row)
         btn_save = QPushButton("규칙 저장")
+        btn_save.setToolTip("입력한 규칙을 config/target_tables.yaml 에 저장합니다.")
         btn_save.clicked.connect(self.save_rules)
         rule_btns.addWidget(btn_add)
         rule_btns.addWidget(btn_del)
         rule_btns.addStretch(1)
         rule_btns.addWidget(btn_save)
         rules_layout.addLayout(rule_btns)
-        hint = QLabel('예) 표 1행이 "품명 | 규격 | 수량" 이면 헤더 칸에  품명, 규격, 수량')
+        hint = QLabel(
+            '규칙이 헷갈리면 제목 표시줄 오른쪽 [?] (최소화 왼쪽)를 누르세요. '
+            '각 칸에 마우스를 올려도 간단한 설명이 나옵니다.'
+        )
         hint.setStyleSheet("color: gray;")
+        hint.setWordWrap(True)
         rules_layout.addWidget(hint)
         layout.addWidget(rules_box, 1)
 
@@ -207,8 +482,10 @@ class MainWindow(QMainWindow):
         run_layout = QHBoxLayout()
         self.btn_run = QPushButton("추출 실행")
         self.btn_run.setMinimumHeight(36)
+        self.btn_run.setToolTip("선택한 파일·모드·규칙으로 표를 추출합니다. 큰 DRM 문서는 수 분 걸릴 수 있습니다.")
         self.btn_run.clicked.connect(self.run_extract)
         self.btn_open = QPushButton("결과 폴더 열기")
+        self.btn_open.setToolTip(f"추출된 엑셀과 로그가 저장되는 폴더를 엽니다.\n{OUTPUT_DIR}")
         self.btn_open.clicked.connect(self.open_output)
         run_layout.addWidget(self.btn_run, 1)
         run_layout.addWidget(self.btn_open)
@@ -220,6 +497,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_view, 1)
 
         self.load_rules_into_table()
+
+    def show_help(self):
+        HelpDialog(self).exec()
 
     # ---------------- 입력 선택 ----------------
     def pick_file(self):
@@ -258,7 +538,9 @@ class MainWindow(QMainWindow):
             str(rule.get("threshold", 60)),
         ]
         for col, value in enumerate(values):
-            self.table.setItem(row, col, QTableWidgetItem(value))
+            item = QTableWidgetItem(value)
+            item.setToolTip(RULE_COLUMN_SPECS[col][1])
+            self.table.setItem(row, col, item)
 
     def delete_rule_row(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)

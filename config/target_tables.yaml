@@ -15,3 +15,18 @@ rules:
   - 수리부속
   expected_cols: 4
   threshold: 60.0
+- name: 규칙2
+  expected_headers:
+  - rtrtt
+  - rtrrt
+  title_keywords: []
+  expected_cols: null
+  threshold: 60.0
+- name: 규칙3
+  expected_headers:
+  - dd
+  - d
+  - dd
+  title_keywords: []
+  expected_cols: null
+  threshold: 60.0
