@@ -8,4 +8,4 @@ if not exist .venv\Scripts\pythonw.exe (
     exit /b 1
 )
 
-start "" .venv\Scripts\pythonw.exe -m src.gui
+start "" /D "%~dp0" "%~dp0.venv\Scripts\pythonw.exe" -m src.gui

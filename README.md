@@ -13,11 +13,16 @@
 
 ## 설치 (인터넷 없는 PC 포함)
 
+> **비개발자용 상세 안내:** [`설치방법.txt`](설치방법.txt) 참고
+
 `wheelhouse/` 폴더에 Python 3.13 (Windows 64bit)용 wheel이 모두 포함되어 있어 **인터넷 없이 설치 가능**합니다.
 
-1. 이 프로젝트 폴더 전체를 대상 PC로 복사
-2. Python 3.13 설치 확인 (`py -3.13 --version`)
+1. 이 프로젝트 폴더 전체를 대상 PC로 복사 (GitHub clone 또는 ZIP)
+2. Python 3.13 설치 (`py -3.13 --version` 으로 확인, PATH 체크 필수)
 3. `install_offline.bat` 더블클릭 (가상환경 생성 + wheelhouse에서 오프라인 설치)
+4. `run_gui.bat` 더블클릭으로 실행
+
+> `.venv/` 는 PC마다 `install_offline.bat` 으로 새로 만듭니다. GitHub/폴더 복사만으로는 실행되지 않습니다.
 
 수동 설치 시:
 
