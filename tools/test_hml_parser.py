@@ -85,7 +85,7 @@ def main() -> None:
 
     rule = {"name": "부품목록표",
             "expected_headers": ["품명", "규격", "수량", "비고"],
-            "title_keywords": ["부품 목록"], "expected_cols": 4, "threshold": 60}
+            "title_keywords": ["부품 목록"], "expected_cols": 4, "threshold": 80}
     results = select_tables([table], [rule])
     assert len(results) == 1, "선별 실패"
 

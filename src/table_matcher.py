@@ -1,7 +1,9 @@
-"""점수 기반 표 선별기.
+"""일치율 기반 표 선별기.
 
-여러 기준(헤더 일치율, 제목 키워드, 열 개수, 셀 패턴)에 가중치를 부여해
-합산 점수가 threshold 이상인 표만 추출 대상으로 선정한다.
+규칙에 입력된 기준(헤더, 제목 키워드, 열 개수, 셀 패턴)만으로 만점을 계산하고,
+실제 일치 정도를 0~100% 일치율로 환산해 threshold(%) 이상인 표만 선정한다.
+입력하지 않은 기준은 만점에 포함되지 않으므로, 어떤 조합으로 입력해도
+"전부 일치 = 100%" 의 의미가 유지된다.
 """
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ import re
 from .models import MatchResult, Table
 
 DEFAULT_WEIGHTS = {"header": 50, "title": 30, "cols": 10, "pattern": 10}
+DEFAULT_THRESHOLD = 80.0  # 일치율(%) 기준
 
 
 def normalize(s: str) -> str:
@@ -18,49 +21,59 @@ def normalize(s: str) -> str:
 
 
 def score_table(table: Table, rule: dict) -> tuple[float, list[str]]:
-    """표 하나를 규칙 하나와 대조하여 (점수, 매칭 근거) 반환."""
+    """표 하나를 규칙 하나와 대조하여 (일치율 %, 매칭 근거) 반환."""
     weights = {**DEFAULT_WEIGHTS, **(rule.get("weights") or {})}
-    score = 0.0
+    earned = 0.0
+    max_score = 0.0
     reasons: list[str] = []
 
     # 1) 헤더 일치율
     expected = {normalize(h) for h in (rule.get("expected_headers") or []) if h}
     if expected:
+        max_score += weights["header"]
         actual = {normalize(h) for h in table.header_row() if h}
         matched = expected & actual
         ratio = len(matched) / len(expected)
         if ratio > 0:
-            score += ratio * weights["header"]
-            reasons.append(f"헤더 {len(matched)}/{len(expected)} 일치 (+{ratio * weights['header']:.0f})")
+            earned += ratio * weights["header"]
+            reasons.append(f"헤더 {len(matched)}/{len(expected)} 일치")
 
     # 2) 캡션/직전 문단 키워드
-    context = normalize(" ".join([table.caption, *table.preceding_texts]))
-    for kw in (rule.get("title_keywords") or []):
-        if kw and normalize(kw) in context:
-            score += weights["title"]
-            reasons.append(f"제목 키워드 '{kw}' (+{weights['title']})")
-            break
+    keywords = [kw for kw in (rule.get("title_keywords") or []) if kw]
+    if keywords:
+        max_score += weights["title"]
+        context = normalize(" ".join([table.caption, *table.preceding_texts]))
+        for kw in keywords:
+            if normalize(kw) in context:
+                earned += weights["title"]
+                reasons.append(f"제목 키워드 '{kw}' 일치")
+                break
 
     # 3) 열 개수 일치
     expected_cols = rule.get("expected_cols")
-    if expected_cols and table.n_cols == int(expected_cols):
-        score += weights["cols"]
-        reasons.append(f"열 개수 {table.n_cols} 일치 (+{weights['cols']})")
+    if expected_cols:
+        max_score += weights["cols"]
+        if table.n_cols == int(expected_cols):
+            earned += weights["cols"]
+            reasons.append(f"열 개수 {table.n_cols} 일치")
 
     # 4) 셀 내 정규식 패턴
     pattern = rule.get("cell_pattern")
     if pattern:
+        max_score += weights["pattern"]
         if any(re.search(pattern, c.text) for c in table.cells):
-            score += weights["pattern"]
-            reasons.append(f"셀 패턴 '{pattern}' 발견 (+{weights['pattern']})")
+            earned += weights["pattern"]
+            reasons.append(f"셀 패턴 '{pattern}' 발견")
 
-    return score, reasons
+    if max_score <= 0:
+        return 0.0, reasons
+    return earned / max_score * 100, reasons
 
 
 def select_tables(tables: list[Table], rules: list[dict], logger=None) -> list[MatchResult]:
-    """모든 표를 모든 규칙과 대조하여 threshold 를 넘긴 (표, 규칙) 쌍을 반환.
+    """모든 표를 모든 규칙과 대조하여 일치율이 threshold(%) 이상인 (표, 규칙) 쌍을 반환.
 
-    한 표가 여러 규칙에 매칭되면 점수가 가장 높은 규칙 하나만 채택한다.
+    한 표가 여러 규칙에 매칭되면 일치율이 가장 높은 규칙 하나만 채택한다.
     """
     log = logger.info if logger else print
     results: list[MatchResult] = []
@@ -68,15 +81,15 @@ def select_tables(tables: list[Table], rules: list[dict], logger=None) -> list[M
     for table in tables:
         best: MatchResult | None = None
         for rule in rules:
-            threshold = float(rule.get("threshold", 60))
-            score, reasons = score_table(table, rule)
-            log(f"  [표 #{table.index}] 규칙 '{rule.get('name')}' → {score:.0f}점"
-                f" (기준 {threshold:.0f}) {'; '.join(reasons) if reasons else '매칭 없음'}")
-            if score >= threshold and (best is None or score > best.score):
+            threshold = float(rule.get("threshold", DEFAULT_THRESHOLD))
+            percent, reasons = score_table(table, rule)
+            log(f"  [표 #{table.index}] 규칙 '{rule.get('name')}' → 일치율 {percent:.0f}%"
+                f" (기준 {threshold:.0f}%) {'; '.join(reasons) if reasons else '매칭 없음'}")
+            if percent >= threshold and (best is None or percent > best.score):
                 best = MatchResult(table=table, rule_name=rule.get("name", "rule"),
-                                   score=score, reasons=reasons)
+                                   score=percent, reasons=reasons)
         if best:
             results.append(best)
-            log(f"  => 표 #{best.table.index} 선정 (규칙 '{best.rule_name}', {best.score:.0f}점)")
+            log(f"  => 표 #{best.table.index} 선정 (규칙 '{best.rule_name}', 일치율 {best.score:.0f}%)")
 
     return results

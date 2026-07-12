@@ -5,6 +5,15 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class CellBorders:
+    """셀 네 면 테두리 종류 (HWP borderFill). NONE 이면 해당 변이 보이지 않음."""
+    top: str = "SOLID"
+    bottom: str = "SOLID"
+    left: str = "SOLID"
+    right: str = "SOLID"
+
+
+@dataclass
 class Cell:
     row: int            # 0-based 행 주소
     col: int            # 0-based 열 주소
@@ -13,6 +22,7 @@ class Cell:
     text: str
     width: int          # HWPUNIT (1/7200 inch)
     height: int         # HWPUNIT
+    borders: CellBorders | None = None
 
 
 @dataclass
@@ -21,6 +31,7 @@ class Table:
     section: int                    # 섹션 번호
     caption: str                    # <hp:caption> 텍스트
     preceding_texts: list[str]      # 표 직전 문단 텍스트 (최대 3개)
+    footer_text: str = ""           # 표가 있는 쪽의 꼬리말 (줄바꿈 유지)
     cells: list[Cell] = field(default_factory=list)
     n_rows: int = 0
     n_cols: int = 0

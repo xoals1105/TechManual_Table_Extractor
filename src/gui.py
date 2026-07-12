@@ -20,6 +20,7 @@ from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -89,10 +90,10 @@ HELP_HTML = """
   <td>선택</td>
 </tr>
 <tr>
-  <td><b>기준 점수</b></td>
-  <td>아래 점수 계산 결과가 이 값 <b>이상</b>이면 해당 규칙으로 표를 뽑습니다.</td>
-  <td>기본값 60. 조정 방법은 아래 참고</td>
-  <td>기본 60</td>
+  <td><b>일치율 기준(%)</b></td>
+  <td>표와 규칙의 <b>일치율</b>이 이 값 <b>이상</b>이면 해당 규칙으로 표를 뽑습니다.</td>
+  <td>기본값 80. 조정 방법은 아래 참고</td>
+  <td>기본 80</td>
 </tr>
 </table>
 
@@ -104,34 +105,38 @@ HELP_HTML = """
 <li>DRM이 걸린 .hwp 파일은 <b>한글 프로그램이 설치된 PC</b>에서만 처리됩니다.</li>
 </ul>
 
-<h2>기준 점수 (threshold) 사용법</h2>
-<p>문서마다 표 형태가 조금씩 달라도 뽑을 수 있도록, 여러 조건을 합산한 <b>점수</b>로 표를 고릅니다.</p>
+<h2>일치율 기준(%) 사용법</h2>
+<p>규칙에 <b>입력한 조건만</b>으로 만점을 계산하고, 표가 얼마나 맞는지를
+<b>일치율 0~100%</b> 로 환산합니다. 일치율이 기준(%) 이상이면 표가 선정됩니다.</p>
+<p><b>입력한 조건을 전부 만족하면 어떤 조합이든 100%</b> 입니다.
+헤더만 입력해도, 헤더+키워드를 입력해도 전부 일치하면 100%가 됩니다.</p>
 
-<h3>점수 계산</h3>
+<h3>조건별 비중</h3>
 <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-<tr><th>조건</th><th>점수</th><th>설명</th></tr>
-<tr><td>헤더 일치</td><td>최대 50</td>
-    <td>입력한 헤더 중 표 1행과 일치하는 비율 × 50<br>
-    예) 4개 중 4개 일치 → 50점 / 3개 일치 → 37.5점</td></tr>
-<tr><td>제목 키워드</td><td>+30</td><td>키워드 중 하나라도 표 위·캡션에 있으면</td></tr>
-<tr><td>열 개수</td><td>+10</td><td>입력한 열 개수와 표 열 수가 같으면</td></tr>
+<tr><th>조건</th><th>비중</th><th>설명</th></tr>
+<tr><td>헤더 일치</td><td>50</td>
+    <td>입력한 헤더 중 표 1행과 일치하는 비율만큼 반영<br>
+    예) 4개 중 3개 일치 → 비중의 75%만 인정</td></tr>
+<tr><td>제목 키워드</td><td>30</td><td>키워드 중 하나라도 표 위·캡션에 있으면</td></tr>
+<tr><td>열 개수</td><td>10</td><td>입력한 열 개수와 표 열 수가 같으면</td></tr>
 </table>
-<p>합계 ≥ <b>기준 점수</b> 이면 그 규칙으로 표가 선정됩니다.</p>
+<p>입력하지 않은 조건은 만점 계산에서 <b>제외</b>됩니다.</p>
 
-<h3>점수 예시 (기준 60일 때)</h3>
+<h3>일치율 예시 (기준 80%일 때)</h3>
 <ul>
-<li>헤더 4/4 전부 일치 → <b>50점</b> → 기준 60 <b>미달</b> (제목 키워드나 열 개수를 추가하거나, 기준을 50으로 내리세요)</li>
-<li>헤더 4/4 + 열 개수 4 → <b>60점</b> → 선정</li>
-<li>헤더 4/4 + 제목 키워드 → <b>80점</b> → 선정</li>
+<li>헤더만 입력, 4/4 전부 일치 → <b>100%</b> → 선정</li>
+<li>헤더만 입력, 4개 중 3개 일치 → <b>75%</b> → 미달</li>
+<li>헤더+키워드 입력, 헤더 4/4 일치·키워드 불일치 → 50/80 = <b>63%</b> → 미달</li>
+<li>헤더+키워드 입력, 둘 다 일치 → <b>100%</b> → 선정</li>
 </ul>
 
-<h3>기준 점수 조정</h3>
+<h3>기준(%) 조정</h3>
 <ul>
-<li><b>너무 많은 표가 뽑힐 때</b> → 70 ~ 80 으로 올립니다.</li>
-<li><b>원하는 표가 빠질 때</b> → 40 ~ 50 으로 내리거나, 헤더·제목 키워드를 보강합니다.</li>
-<li><b>헤더만 넣고 쓸 때</b> → 기준 점수를 <b>50</b>으로 두는 것이 일반적입니다.</li>
+<li><b>엉뚱한 표까지 뽑힐 때</b> → 90 ~ 100 으로 올립니다.</li>
+<li><b>원하는 표가 빠질 때</b> → 60 ~ 70 으로 내리거나, 헤더·제목 키워드를 보강합니다.</li>
+<li>기본값 <b>80</b>이면 "입력한 조건이 대부분 맞는 표"만 뽑힙니다.</li>
 </ul>
-<p>실행 후 <code>output\\extract.log</code> 에 표마다 점수와 선정 이유가 기록됩니다.
+<p>실행 후 <code>output\\extract.log</code> 에 표마다 일치율과 선정 이유가 기록됩니다.
 결과가 이상하면 이 로그를 확인하세요.</p>
 """
 
@@ -159,16 +164,17 @@ RULE_COLUMN_SPECS: list[tuple[str, str]] = [
         "헤더가 비슷한 표가 여러 개일 때 보조로 사용합니다. 비워도 됩니다.",
     ),
     (
-        "기준 점수",
-        "이 점수 이상이면 해당 규칙으로 표를 뽑습니다. 기본값 60.\n"
-        "점수 계산: 헤더 일치(최대 50) + 제목 키워드(+30) + 열 개수(+10)\n"
-        "너무 많이 뽑히면 70~80 으로 올리고, 빠지면 40~50 으로 내립니다.",
+        "일치율 기준(%)",
+        "표와 규칙의 일치율(0~100%)이 이 값 이상이면 표를 뽑습니다. 기본값 80.\n"
+        "입력한 조건(헤더·키워드·열 개수)을 전부 만족하면 100%입니다.\n"
+        "엉뚱한 표가 뽑히면 90~100으로 올리고, 빠지면 60~70으로 내립니다.",
     ),
 ]
 
 CONFIG_HEADER = """\
 # 이 파일은 GUI(규칙 저장)에서 자동 생성되었습니다.
-# 점수: 헤더 일치율 x50, 제목 키워드 +30, 열 개수 +10 → threshold 이상이면 추출
+# threshold: 일치율(%) 기준. 입력한 조건(헤더 50, 키워드 30, 열 개수 10 비중)을
+# 전부 만족하면 100%이며, 일치율이 threshold 이상인 표만 추출됩니다.
 """
 
 
@@ -314,12 +320,16 @@ class ExtractWorker(QThread):
     failed = pyqtSignal(str)        # 오류 메시지
 
     def __init__(self, input_path: Path, rules: list[dict], extract_all: bool,
-                 include_title: bool):
+                 include_title: bool, include_footer: bool, visual_merge: bool,
+                 sheet_layout: str):
         super().__init__()
         self.input_path = input_path
         self.rules = rules
         self.extract_all = extract_all
         self.include_title = include_title
+        self.include_footer = include_footer
+        self.visual_merge = visual_merge
+        self.sheet_layout = sheet_layout
 
     def run(self):
         try:
@@ -340,14 +350,25 @@ class ExtractWorker(QThread):
 
         try:
             files = collect_input_files(self.input_path)
-            self.log.emit(f"입력 파일 {len(files)}개, 규칙 {len(self.rules)}개"
-                          f" (표 제목 {'포함' if self.include_title else '미포함'})")
+            layout_label = (
+                "표당 시트 1개" if self.sheet_layout == "per_table" else "단일 시트 연속 배치"
+            )
+            self.log.emit(
+                f"입력 파일 {len(files)}개, 규칙 {len(self.rules)}개"
+                f" (표 제목: {'포함' if self.include_title else '미포함'},"
+                f" 꼬리말: {'포함' if self.include_footer else '미포함'},"
+                f" 숨은 가로선 병합: {'적용' if self.visual_merge else '미적용'},"
+                f" 시트 배치: {layout_label})"
+            )
             summary, failed = [], []
             for f in files:
                 try:
                     summary.append(process_file(
                         f, self.rules, OUTPUT_DIR, self.extract_all,
                         include_title=self.include_title,
+                        include_footer=self.include_footer,
+                        visual_merge=self.visual_merge,
+                        sheet_layout=self.sheet_layout,
                     ))
                 except Exception:
                     logger.exception(f"처리 실패: {f}")
@@ -426,18 +447,56 @@ class MainWindow(QMainWindow):
         self.radio_rules = QRadioButton("아래 규칙에 맞는 표만 추출")
         self.radio_rules.setToolTip("아래 규칙 표에 입력한 조건에 맞는 표만 엑셀로 뽑습니다.")
         self.radio_all.setChecked(True)
-        self.chk_title = QCheckBox("엑셀 1행에 표 제목 넣기")
-        self.chk_title.setToolTip(
-            "체크: 엑셀 1행에 표 제목, 3행부터 표 내용\n"
-            "해제: 1행부터 표 내용만 (기본 권장)")
         mode_layout.addWidget(self.radio_all)
         mode_layout.addWidget(self.radio_rules)
         mode_layout.addStretch(1)
-        mode_layout.addWidget(self.chk_title)
         layout.addWidget(mode_box)
 
-        # --- 3. 규칙 편집기 ---
-        rules_box = QGroupBox("3. 표 선별 규칙 (규칙에 맞는 표만 추출할 때 사용)")
+        # --- 3. 엑셀 출력 옵션 ---
+        output_box = QGroupBox("3. 엑셀 출력 옵션")
+        output_box.setToolTip("이 옵션들은 [규칙 저장]을 누르면 설정 파일에 함께 저장됩니다.")
+        output_layout = QHBoxLayout(output_box)
+
+        sheet_label = QLabel("시트:")
+        self.radio_sheet_per_table = QRadioButton("표 하나당 시트 1개")
+        self.radio_sheet_per_table.setToolTip(
+            "추출된 표마다 엑셀 시트를 하나씩 만듭니다. (기본)")
+        self.radio_sheet_single = QRadioButton("한 시트에 연속 배치")
+        self.radio_sheet_single.setToolTip(
+            "추출된 모든 표를 '추출표' 시트 하나에 위에서 아래로 이어 붙입니다.\n"
+            "표 사이에는 빈 행 2칸을 둡니다. 꼬리말이 있으면 표 바로 아래에 넣은 뒤 빈 행 2칸을 둡니다.")
+        self.radio_sheet_per_table.setChecked(True)
+        # 시트 라디오를 별도 그룹으로 묶어 추출 방식 라디오와 간섭 방지
+        sheet_group = QButtonGroup(self)
+        sheet_group.addButton(self.radio_sheet_per_table)
+        sheet_group.addButton(self.radio_sheet_single)
+        self._sheet_group = sheet_group
+
+        self.chk_title = QCheckBox("표 제목 넣기")
+        self.chk_title.setToolTip(
+            "체크: 엑셀 1행에 표 제목, 3행부터 표 내용\n"
+            "해제: 1행부터 표 내용만 (기본 권장)")
+        self.chk_footer = QCheckBox("표 아래에 꼬리말 넣기")
+        self.chk_footer.setToolTip(
+            "표가 있는 페이지의 꼬리말을 엑셀 표 바로 아래 행에 넣습니다.\n"
+            "줄바꿈과 순서는 원문 그대로 유지합니다.")
+        self.chk_visual_merge = QCheckBox("숨은 가로선 셀 합치기")
+        self.chk_visual_merge.setToolTip(
+            "한글에서 가로 구분선이 없어 한 칸처럼 보이는 셀을,\n"
+            "엑셀에서도 세로 병합으로 맞춥니다.")
+
+        output_layout.addWidget(sheet_label)
+        output_layout.addWidget(self.radio_sheet_per_table)
+        output_layout.addWidget(self.radio_sheet_single)
+        output_layout.addSpacing(24)
+        output_layout.addWidget(self.chk_title)
+        output_layout.addWidget(self.chk_footer)
+        output_layout.addWidget(self.chk_visual_merge)
+        output_layout.addStretch(1)
+        layout.addWidget(output_box)
+
+        # --- 4. 규칙 편집기 ---
+        rules_box = QGroupBox("4. 표 선별 규칙 (규칙에 맞는 표만 추출할 때 사용)")
         rules_box.setToolTip("각 열 헤더에 마우스를 올리면 입력 방법을 볼 수 있습니다.")
         rules_layout = QVBoxLayout(rules_box)
         self.table = QTableWidget(0, len(RULE_COLUMN_SPECS))
@@ -462,7 +521,8 @@ class MainWindow(QMainWindow):
         btn_del.setToolTip("표에서 선택한 규칙 행을 삭제합니다.")
         btn_del.clicked.connect(self.delete_rule_row)
         btn_save = QPushButton("규칙 저장")
-        btn_save.setToolTip("입력한 규칙을 config/target_tables.yaml 에 저장합니다.")
+        btn_save.setToolTip(
+            "입력한 규칙과 '엑셀 출력 옵션'을 config/target_tables.yaml 에 저장합니다.")
         btn_save.clicked.connect(self.save_rules)
         rule_btns.addWidget(btn_add)
         rule_btns.addWidget(btn_del)
@@ -478,7 +538,7 @@ class MainWindow(QMainWindow):
         rules_layout.addWidget(hint)
         layout.addWidget(rules_box, 1)
 
-        # --- 4. 실행 ---
+        # --- 5. 실행 ---
         run_layout = QHBoxLayout()
         self.btn_run = QPushButton("추출 실행")
         self.btn_run.setMinimumHeight(36)
@@ -521,6 +581,13 @@ class MainWindow(QMainWindow):
         except FileNotFoundError:
             rules, output_opts = [], {}
         self.chk_title.setChecked(bool(output_opts.get("include_title", False)))
+        self.chk_footer.setChecked(bool(output_opts.get("include_footer", True)))
+        self.chk_visual_merge.setChecked(bool(output_opts.get("visual_merge", True)))
+        sheet_layout = output_opts.get("sheet_layout", "per_table")
+        if sheet_layout == "single_sheet":
+            self.radio_sheet_single.setChecked(True)
+        else:
+            self.radio_sheet_per_table.setChecked(True)
         self.table.setRowCount(0)
         for rule in rules:
             self.add_rule_row(rule)
@@ -535,7 +602,7 @@ class MainWindow(QMainWindow):
             ", ".join(rule.get("expected_headers") or []),
             ", ".join(rule.get("title_keywords") or []),
             "" if cols in (None, "") else str(cols),
-            str(rule.get("threshold", 60)),
+            str(rule.get("threshold", 80)),
         ]
         for col, value in enumerate(values):
             item = QTableWidgetItem(value)
@@ -563,9 +630,9 @@ class MainWindow(QMainWindow):
                 continue  # 빈 행 무시
             cols_text = self._cell(row, 3)
             try:
-                threshold = float(self._cell(row, 4) or 60)
+                threshold = float(self._cell(row, 4) or 80)
             except ValueError:
-                threshold = 60
+                threshold = 80
             rules.append({
                 "name": self._cell(row, 0) or f"규칙{row + 1}",
                 "expected_headers": headers,
@@ -577,7 +644,14 @@ class MainWindow(QMainWindow):
 
     def save_rules(self):
         config = {
-            "output": {"include_title": self.chk_title.isChecked()},
+            "output": {
+                "include_title": self.chk_title.isChecked(),
+                "include_footer": self.chk_footer.isChecked(),
+                "visual_merge": self.chk_visual_merge.isChecked(),
+                "sheet_layout": (
+                    "single_sheet" if self.radio_sheet_single.isChecked() else "per_table"
+                ),
+            },
             "rules": self.rules_from_table(),
         }
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -610,8 +684,13 @@ class MainWindow(QMainWindow):
         self.btn_run.setEnabled(False)
         self.btn_run.setText("실행 중... (큰 문서는 몇 분 걸릴 수 있습니다)")
 
-        self.worker = ExtractWorker(input_path, rules, extract_all,
-                                    self.chk_title.isChecked())
+        self.worker = ExtractWorker(
+            input_path, rules, extract_all,
+            self.chk_title.isChecked(),
+            self.chk_footer.isChecked(),
+            self.chk_visual_merge.isChecked(),
+            "single_sheet" if self.radio_sheet_single.isChecked() else "per_table",
+        )
         self.worker.log.connect(self.log_view.appendPlainText)
         self.worker.finished_ok.connect(self.on_done)
         self.worker.failed.connect(self.on_failed)

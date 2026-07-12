@@ -13,7 +13,11 @@ from pathlib import Path
 
 from lxml import etree
 
+from .border_info import parse_hml_border_fills, resolve_hml_cell_borders
 from .models import Cell, Table
+
+_FOOTER_LIST_ID = 2
+_MAX_FOOTER_PARAS = 50
 
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>")
 
@@ -91,6 +95,7 @@ def _read_one_table(hwp, ctrl, idx: int) -> Table | None:
     if table is None:
         return None
     table.preceding_texts = _preceding_paragraphs(hwp, ctrl)
+    table.footer_text = _footer_at_table(hwp, ctrl)
     return table
 
 
@@ -135,6 +140,8 @@ def _parse_hml_table(xml: str, idx: int) -> Table | None:
         n_cols=int(tbl_el.get("ColCount", 0)),
     )
 
+    border_fills = parse_hml_border_fills(root)
+
     for cap in tbl_el.iter("CAPTION"):
         if _nearest_ancestor(cap, "TABLE") is tbl_el:
             table.caption = " ".join(
@@ -161,6 +168,7 @@ def _parse_hml_table(xml: str, idx: int) -> Table | None:
             text="\n".join(lines),
             width=int(cell_el.get("Width", 0)),
             height=int(cell_el.get("Height", 0)),
+            borders=resolve_hml_cell_borders(cell_el, border_fills),
         ))
 
     if not table.cells:
@@ -192,3 +200,36 @@ def _preceding_paragraphs(hwp, ctrl, n: int = 3) -> list[str]:
     except Exception:
         pass
     return texts
+
+
+def _footer_at_table(hwp, ctrl) -> str:
+    """표가 있는 쪽의 꼬리말 텍스트를 문단 순서·줄바꿈을 유지해 반환."""
+    try:
+        hwp.SetPosBySet(ctrl.GetAnchorPos(0))
+        act, ps = hwp.HAction, hwp.HParameterSet
+        act.GetDefault("Goto", ps.HGotoE.HSet)
+        ps.HGotoE.HSet.SetItem("DialogResult", 14)  # 꼬리말
+        ps.HGotoE.SetSelectionIndex = 5
+        act.Execute("Goto", ps.HGotoE.HSet)
+
+        lines: list[str] = []
+        hwp.SetPos(_FOOTER_LIST_ID, 0, 0)
+        for _ in range(_MAX_FOOTER_PARAS):
+            hwp.HAction.Run("MoveParaBegin")
+            hwp.HAction.Run("MoveSelParaEnd")
+            text = (hwp.GetTextFile("TEXT", "saveblock") or "").strip()
+            hwp.HAction.Run("Cancel")
+            if text:
+                lines.append(text.replace("\r\n", "\n").replace("\r", "\n"))
+            pos = hwp.GetPos()
+            hwp.HAction.Run("MoveParaEnd")
+            if hwp.GetPos() == pos:
+                break
+        hwp.HAction.Run("CloseEx")
+        return "\n".join(lines)
+    except Exception:
+        try:
+            hwp.HAction.Run("CloseEx")
+        except Exception:
+            pass
+        return ""

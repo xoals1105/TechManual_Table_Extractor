@@ -18,10 +18,11 @@ from pathlib import Path
 
 import yaml
 
-from .excel_writer import write_workbook
+from .excel_writer import SHEET_LAYOUT_PER_TABLE, write_workbook
 from .hwpx_parser import parse_tables
 from .models import MatchResult
 from .table_matcher import select_tables
+from .visual_merge import apply_visual_merges
 
 logger = logging.getLogger("extractor")
 
@@ -70,6 +71,9 @@ def process_file(
     extract_all: bool,
     *,
     include_title: bool = True,
+    include_footer: bool = True,
+    visual_merge: bool = True,
+    sheet_layout: str = "per_table",
 ) -> dict:
     """파일 하나 처리 후 요약 정보 반환."""
     logger.info("=" * 70)
@@ -82,6 +86,8 @@ def process_file(
         logger.info("  HWPX(ZIP) 형식이 아님 (DRM/구형 HWP 추정) → 한글로 문서를 열어 표를 읽습니다...")
         from .hwp_com_reader import read_tables_via_com
         tables = read_tables_via_com(path)
+    if visual_merge:
+        tables = [apply_visual_merges(t) for t in tables]
     logger.info(f"  문서 내 표 {len(tables)}개 발견")
 
     if extract_all:
@@ -91,7 +97,13 @@ def process_file(
         results = select_tables(tables, rules, logger=logger)
 
     out_xlsx = out_dir / f"{path.stem}_tables.xlsx"
-    write_workbook(results, out_xlsx, include_title=include_title)
+    write_workbook(
+        results,
+        out_xlsx,
+        include_title=include_title,
+        include_footer=include_footer,
+        sheet_layout=sheet_layout,
+    )
     logger.info(f"  추출 {len(results)}/{len(tables)}개 표 → {out_xlsx}")
 
     return {"file": path.name, "total": len(tables), "extracted": len(results),
@@ -120,17 +132,32 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rules, output_opts = load_config(config_path, require_rules=True)
     include_title = bool(output_opts.get("include_title", True))
+    include_footer = bool(output_opts.get("include_footer", True))
+    visual_merge = bool(output_opts.get("visual_merge", True))
+    sheet_layout = output_opts.get("sheet_layout", SHEET_LAYOUT_PER_TABLE)
+    if sheet_layout not in ("per_table", "single_sheet"):
+        sheet_layout = SHEET_LAYOUT_PER_TABLE
     files = collect_input_files(Path(args.input))
+    layout_label = (
+        "표당 시트 1개" if sheet_layout == SHEET_LAYOUT_PER_TABLE else "단일 시트 연속 배치"
+    )
     logger.info(
         f"입력 파일 {len(files)}개, 규칙 {len(rules)}개 로드"
-        f" (엑셀 표 제목: {'포함' if include_title else '미포함'})"
+        f" (표 제목: {'포함' if include_title else '미포함'},"
+        f" 꼬리말: {'포함' if include_footer else '미포함'},"
+        f" 숨은 가로선 병합: {'적용' if visual_merge else '미적용'},"
+        f" 시트 배치: {layout_label})"
     )
 
     summary, failed = [], []
     for f in files:
         try:
             summary.append(process_file(
-                f, rules, out_dir, args.all, include_title=include_title,
+                f, rules, out_dir, args.all,
+                include_title=include_title,
+                include_footer=include_footer,
+                visual_merge=visual_merge,
+                sheet_layout=sheet_layout,
             ))
         except Exception:
             logger.exception(f"처리 실패: {f}")

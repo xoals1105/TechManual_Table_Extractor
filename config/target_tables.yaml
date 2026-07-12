@@ -1,5 +1,6 @@
 # 이 파일은 GUI(규칙 저장)에서 자동 생성되었습니다.
-# 점수: 헤더 일치율 x50, 제목 키워드 +30, 열 개수 +10 → threshold 이상이면 추출
+# threshold: 일치율(%) 기준. 입력한 조건(헤더 50, 키워드 30, 열 개수 10 비중)을
+# 전부 만족하면 100%이며, 일치율이 threshold 이상인 표만 추출됩니다.
 output:
   include_title: false
 rules:
@@ -14,14 +15,14 @@ rules:
   - 부품목록
   - 수리부속
   expected_cols: 4
-  threshold: 60.0
+  threshold: 80.0
 - name: 규칙2
   expected_headers:
   - rtrtt
   - rtrrt
   title_keywords: []
   expected_cols: null
-  threshold: 60.0
+  threshold: 80.0
 - name: 규칙3
   expected_headers:
   - dd
@@ -29,4 +30,4 @@ rules:
   - dd
   title_keywords: []
   expected_cols: null
-  threshold: 60.0
+  threshold: 80.0

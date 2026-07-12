@@ -13,6 +13,13 @@ from pathlib import Path
 
 from lxml import etree
 
+from .border_info import load_hwpx_border_fills
+from .footer_utils import (
+    estimate_page_number,
+    parse_section_footers,
+    section_page_layout,
+    select_footer_text,
+)
 from .models import Cell, Table
 
 HP_NS = "http://www.hancom.co.kr/hwpml/2011/paragraph"
@@ -83,6 +90,7 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
     table_index = 0
 
     with zipfile.ZipFile(hwpx_path) as z:
+        border_fills = load_hwpx_border_fills(z)
         section_names = sorted(
             n for n in z.namelist()
             if n.startswith("Contents/section") and n.endswith(".xml")
@@ -92,6 +100,8 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
 
         for sec_no, sec_name in enumerate(section_names):
             root = etree.fromstring(z.read(sec_name))
+            section_footers = parse_section_footers(root)
+            content_height, hide_first_footer = section_page_layout(root)
             # 섹션 최상위 문단 목록 (표 직전 문단 탐색용)
             top_paragraphs = [child for child in root if child.tag == _tag("p")]
             top_para_set = set(top_paragraphs)
@@ -102,6 +112,7 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
                     section=sec_no,
                     caption="",
                     preceding_texts=[],
+                    footer_text="",
                     n_rows=int(tbl.get("rowCnt", 0)),
                     n_cols=int(tbl.get("colCnt", 0)),
                 )
@@ -121,6 +132,12 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
                             continue
                         preceding.append(_text_of(p))
                     table.preceding_texts = preceding
+                    page_no = estimate_page_number(top_paragraphs, host_p, content_height)
+                    table.footer_text = select_footer_text(
+                        section_footers,
+                        page_no,
+                        hide_first_footer=hide_first_footer,
+                    )
 
                 for tr in tbl.findall(_tag("tr")):
                     for tc in tr.findall(_tag("tc")):
@@ -129,6 +146,8 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
                         size = tc.find(_tag("cellSz"))
                         if addr is None:
                             continue
+                        bf_ref = tc.get("borderFillIDRef")
+                        borders = border_fills.get(bf_ref) if bf_ref else None
                         table.cells.append(Cell(
                             row=int(addr.get("rowAddr", 0)),
                             col=int(addr.get("colAddr", 0)),
@@ -137,6 +156,7 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
                             text=_cell_text(tc),
                             width=int(size.get("width", 0)) if size is not None else 0,
                             height=int(size.get("height", 0)) if size is not None else 0,
+                            borders=borders,
                         ))
 
                 tables.append(table)
