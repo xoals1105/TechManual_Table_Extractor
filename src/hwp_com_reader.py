@@ -16,7 +16,6 @@ from lxml import etree
 from .border_info import parse_hml_border_fills, resolve_hml_cell_borders
 from .models import Cell, Table
 
-_FOOTER_LIST_ID = 2
 _MAX_FOOTER_PARAS = 50
 
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>")
@@ -58,6 +57,7 @@ def read_tables_via_com(path: str | Path, visible: bool = False) -> list[Table]:
             )
 
         tables: list[Table] = []
+        tbl_ctrls = []
         idx = 0
         ctrl = hwp.HeadCtrl
         while ctrl is not None:
@@ -65,8 +65,15 @@ def read_tables_via_com(path: str | Path, visible: bool = False) -> list[Table]:
                 table = _read_one_table(hwp, ctrl, idx)
                 if table is not None:
                     tables.append(table)
+                    tbl_ctrls.append(ctrl)
                     idx += 1
             ctrl = ctrl.Next
+        try:
+            footers = _footer_map_for_tables(hwp, tbl_ctrls)
+            for table, footer in zip(tables, footers):
+                table.footer_text = footer
+        except Exception:
+            pass
         return tables
     finally:
         try:
@@ -95,7 +102,6 @@ def _read_one_table(hwp, ctrl, idx: int) -> Table | None:
     if table is None:
         return None
     table.preceding_texts = _preceding_paragraphs(hwp, ctrl)
-    table.footer_text = _footer_at_table(hwp, ctrl)
     return table
 
 
@@ -202,34 +208,351 @@ def _preceding_paragraphs(hwp, ctrl, n: int = 3) -> list[str]:
     return texts
 
 
-def _footer_at_table(hwp, ctrl) -> str:
-    """표가 있는 쪽의 꼬리말 텍스트를 문단 순서·줄바꿈을 유지해 반환."""
-    try:
-        hwp.SetPosBySet(ctrl.GetAnchorPos(0))
-        act, ps = hwp.HAction, hwp.HParameterSet
-        act.GetDefault("Goto", ps.HGotoE.HSet)
-        ps.HGotoE.HSet.SetItem("DialogResult", 14)  # 꼬리말
-        ps.HGotoE.SetSelectionIndex = 5
-        act.Execute("Goto", ps.HGotoE.HSet)
+def _goto_table_last_cell(hwp, ctrl) -> None:
+    """표 컨트롤의 마지막 셀(끝 페이지 쪽)으로 캐럿을 이동한다."""
+    hwp.SetPosBySet(ctrl.GetAnchorPos(0))
+    hwp.FindCtrl()
+    hwp.HAction.Run("ShapeObjTableSelCell")
+    for _ in range(500):
+        before = hwp.GetPos()
+        try:
+            hwp.HAction.Run("TableColEnd")
+        except Exception:
+            pass
+        try:
+            hwp.HAction.Run("TableLowerCell")
+        except Exception:
+            pass
+        if hwp.GetPos() == before:
+            break
 
-        lines: list[str] = []
-        hwp.SetPos(_FOOTER_LIST_ID, 0, 0)
-        for _ in range(_MAX_FOOTER_PARAS):
-            hwp.HAction.Run("MoveParaBegin")
-            hwp.HAction.Run("MoveSelParaEnd")
-            text = (hwp.GetTextFile("TEXT", "saveblock") or "").strip()
-            hwp.HAction.Run("Cancel")
-            if text:
-                lines.append(text.replace("\r\n", "\n").replace("\r", "\n"))
-            pos = hwp.GetPos()
-            hwp.HAction.Run("MoveParaEnd")
-            if hwp.GetPos() == pos:
+
+def _exit_table_to_body(hwp) -> None:
+    """표의 마지막 셀에서 같은(끝) 쪽 본문으로 빠져나온다.
+
+    CloseEx는 표 앵커(시작 쪽)로 돌아가므로 사용하지 않는다.
+    마지막 셀에서 MoveDown 하면 표 바로 다음 본문(보통 끝 쪽)으로 이동한다.
+    """
+    try:
+        hwp.HAction.Run("Cancel")
+    except Exception:
+        pass
+    for _ in range(8):
+        if hwp.GetPos()[0] == 0:
+            return
+        before = hwp.GetPos()
+        try:
+            hwp.HAction.Run("MoveDown")
+        except Exception:
+            break
+        if hwp.GetPos() == before:
+            break
+    # 그래도 표 안이면 오른쪽으로 한 번 더
+    for _ in range(3):
+        if hwp.GetPos()[0] == 0:
+            return
+        try:
+            hwp.HAction.Run("MoveRight")
+        except Exception:
+            break
+
+
+
+def _move_to_current_list_begin(hwp) -> None:
+    """현재 리스트 인스턴스의 첫 문단으로 이동한다.
+
+    SetPos(list_id, 0, 0)은 문서 전체에서 같은 목록 ID의 첫 인스턴스
+    (대개 첫 페이지/첫 구역 꼬리말)로 점프하므로 사용하지 않는다.
+    """
+    list_id = hwp.GetPos()[0]
+    if list_id == 0:
+        return
+    for _ in range(_MAX_FOOTER_PARAS):
+        before = hwp.GetPos()
+        try:
+            hwp.HAction.Run("MovePrevPara")
+        except Exception:
+            break
+        after = hwp.GetPos()
+        if after[0] != list_id:
+            # 리스트를 벗어났으면 한 문단 복귀
+            try:
+                hwp.HAction.Run("MoveNextPara")
+            except Exception:
+                pass
+            break
+        if after == before:
+            break
+
+
+def _read_list_paragraphs(hwp, list_id: int | None = None) -> str:
+    """현재 캐럿이 있는 리스트(꼬리말 등) 문단을 순서·줄바꿈 유지해 반환.
+
+    list_id가 주어지면 현재 리스트와 같을 때만 읽는다.
+    SetPos(list_id,0,0)은 다른 쪽/구역의 첫 꼬리말로 점프할 수 있어 쓰지 않는다.
+    """
+    cur_id = hwp.GetPos()[0]
+    if cur_id == 0:
+        return ""
+    if list_id is not None and cur_id != list_id:
+        return ""
+
+    _move_to_current_list_begin(hwp)
+    lines: list[str] = []
+    for _ in range(_MAX_FOOTER_PARAS):
+        if hwp.GetPos()[0] != cur_id:
+            break
+        hwp.HAction.Run("MoveParaBegin")
+        hwp.HAction.Run("MoveSelParaEnd")
+        text = (hwp.GetTextFile("TEXT", "saveblock") or "").strip()
+        hwp.HAction.Run("Cancel")
+        if text:
+            lines.append(text.replace("\r\n", "\n").replace("\r", "\n"))
+        pos = hwp.GetPos()
+        hwp.HAction.Run("MoveNextPara")
+        if hwp.GetPos() == pos:
+            break
+        if hwp.GetPos()[0] != cur_id:
+            break
+    return "\n".join(lines)
+
+
+def _enter_footer(hwp) -> bool:
+    """꼬리말 편집 영역으로 들어간다. 성공 여부 반환.
+
+    Goto(14)는 '다음 꼬리말 컨트롤'을 찾는다. 캐럿을 본문 앞으로 둔 뒤
+    호출하면 문서 순서의 꼬리말을 순회할 수 있다.
+    (현재 쪽 꼬리말만 보장하지는 않으므로, 표 매칭은 컨트롤 순서를 쓴다.)
+    """
+    act, ps = hwp.HAction, hwp.HParameterSet
+    act.GetDefault("Goto", ps.HGotoE.HSet)
+    ps.HGotoE.HSet.SetItem("DialogResult", 14)  # 꼬리말
+    ps.HGotoE.SetSelectionIndex = 5
+    act.Execute("Goto", ps.HGotoE.HSet)
+    try:
+        hwp.HAction.Run("HeaderFooterModify")
+    except Exception:
+        pass
+    if hwp.GetPos()[0] != 0:
+        return True
+    try:
+        hwp.HAction.Run("Footer")
+        try:
+            hwp.HAction.Run("HeaderFooterModify")
+        except Exception:
+            pass
+    except Exception:
+        return False
+    return hwp.GetPos()[0] != 0
+
+
+def _footer_kind_from_desc(user_desc: str) -> str:
+    """꼬리말 컨트롤 UserDesc → BOTH / ODD / EVEN."""
+    desc = user_desc or ""
+    if "홀수" in desc:
+        return "ODD"
+    if "짝수" in desc:
+        return "EVEN"
+    return "BOTH"
+
+
+def _collect_footer_texts_in_order(hwp) -> list[str]:
+    """문서에 등장하는 꼬리말 컨트롤 텍스트를 순서대로 수집 (한 바퀴면 종료)."""
+    texts: list[str] = []
+    first_list_id: int | None = None
+    try:
+        hwp.HAction.Run("MoveDocBegin")
+    except Exception:
+        pass
+
+    for _ in range(40):
+        if not _enter_footer(hwp):
+            break
+        list_id = hwp.GetPos()[0]
+        text = _read_list_paragraphs(hwp, list_id)
+        try:
+            hwp.HAction.Run("CloseEx")
+        except Exception:
+            pass
+
+        if first_list_id is None:
+            first_list_id = list_id
+            texts.append(text)
+        elif list_id == first_list_id:
+            break
+        else:
+            texts.append(text)
+
+        for _ in range(3):
+            try:
+                hwp.HAction.Run("MoveRight")
+            except Exception:
                 break
-        hwp.HAction.Run("CloseEx")
-        return "\n".join(lines)
+    return texts
+
+
+def _page_at_table_end(hwp, ctrl) -> int:
+    """표 마지막 셀(끝 쪽) 기준 쪽 번호. KeyIndicator 실패 시 1."""
+    try:
+        _goto_table_last_cell(hwp, ctrl)
+        _exit_table_to_body(hwp)
+        if hwp.GetPos()[0] != 0:
+            try:
+                hwp.HAction.Run("CloseEx")
+            except Exception:
+                pass
+        ki = hwp.KeyIndicator()
+        # (ok, ?, page, ...) — page는 보통 인덱스 2
+        if isinstance(ki, (tuple, list)) and len(ki) > 2:
+            page = int(ki[2])
+            if page >= 1:
+                return page
+    except Exception:
+        pass
+    return 1
+
+
+def _select_footer_from_candidates(
+    candidates: list[tuple[str, str]],
+    page_no: int,
+) -> str:
+    """구역 내 (kind, text) 후보에서 쪽 번호에 맞는 꼬리말을 고른다."""
+    if not candidates:
+        return ""
+    odd = [t for k, t in candidates if k == "ODD" and t]
+    even = [t for k, t in candidates if k == "EVEN" and t]
+    both = [t for k, t in candidates if k == "BOTH" and t]
+    if page_no % 2 == 1 and odd:
+        return odd[-1]
+    if page_no % 2 == 0 and even:
+        return even[-1]
+    if both:
+        return both[-1]
+    if odd:
+        return odd[-1]
+    if even:
+        return even[-1]
+    return candidates[-1][1]
+
+
+def _footer_map_for_tables(hwp, tbl_ctrls: list) -> list[str]:
+    """각 표에 대응하는 꼬리말 텍스트 목록 (표 컨트롤 순서와 동일).
+
+    구역(secd) 단위로 꼬리말을 모은 뒤, 그 구역의 모든 표에 적용한다.
+    foot 컨트롤이 표보다 뒤에 있어도(한글 문서에서 흔함) 동일 구역이면 적용한다.
+    꼬리말 없는 구역은 직전 구역 꼬리말을 상속한다(이전 구역과 동일).
+    """
+    foot_texts = _collect_footer_texts_in_order(hwp)
+    if not foot_texts:
+        return [""] * len(tbl_ctrls)
+
+    # 1패스: 구역별 꼬리말·표 인덱스 수집
+    sections: list[dict] = []
+    current: dict = {"foots": [], "tbl_indices": []}
+    foot_i = 0
+    tbl_i = 0
+    ctrl = hwp.HeadCtrl
+    first_secd = True
+    while ctrl is not None:
+        cid = ctrl.CtrlID
+        if cid == "secd":
+            if not first_secd:
+                sections.append(current)
+                current = {"foots": [], "tbl_indices": []}
+            first_secd = False
+        elif cid == "foot":
+            kind = _footer_kind_from_desc(getattr(ctrl, "UserDesc", "") or "")
+            text = foot_texts[foot_i] if foot_i < len(foot_texts) else ""
+            foot_i += 1
+            current["foots"].append((kind, text))
+        elif cid == "tbl":
+            current["tbl_indices"].append(tbl_i)
+            tbl_i += 1
+        ctrl = ctrl.Next
+    sections.append(current)
+
+    result = [""] * len(tbl_ctrls)
+    inherited: list[tuple[str, str]] = []
+    for sec in sections:
+        foots = sec["foots"] or list(inherited)
+        if sec["foots"]:
+            inherited = list(sec["foots"])
+        for ti in sec["tbl_indices"]:
+            if ti >= len(tbl_ctrls):
+                continue
+            page_no = _page_at_table_end(hwp, tbl_ctrls[ti])
+            result[ti] = _select_footer_from_candidates(foots, page_no)
+    return result
+
+
+def _footer_at_table(hwp, ctrl) -> str:
+    """표가 끝나는 쪽의 꼬리말 텍스트를 반환."""
+    try:
+        return _footer_map_for_tables(hwp, [ctrl])[0]
     except Exception:
         try:
             hwp.HAction.Run("CloseEx")
         except Exception:
             pass
         return ""
+
+
+def enrich_footers_via_com(path: str | Path, tables: list[Table], visible: bool = False) -> int:
+    """한글 COM으로 각 표의 끝 페이지 꼬리말을 읽어 footer_text를 덮어쓴다.
+
+    표 컨트롤 문서 순서가 tables 순서와 같다고 가정한다.
+    성공한 표 개수를 반환한다. 한글이 없거나 열기 실패 시 0.
+    """
+    if not tables:
+        return 0
+    try:
+        import win32com.client as win32
+    except ImportError:
+        return 0
+
+    path = Path(path).resolve()
+    hwp = None
+    updated = 0
+    try:
+        try:
+            hwp = win32.gencache.EnsureDispatch("HWPFrame.HwpObject")
+        except Exception:
+            hwp = win32.Dispatch("HWPFrame.HwpObject")
+        try:
+            hwp.RegisterModule("FilePathCheckDLL", "FilePathCheckerModule")
+        except Exception:
+            pass
+        try:
+            hwp.XHwpWindows.Item(0).Visible = visible
+        except Exception:
+            pass
+
+        fmt = "HWPX" if path.suffix.lower() == ".hwpx" else "HWP"
+        if not hwp.Open(str(path), fmt, "forceopen:true"):
+            return 0
+
+        tbl_ctrls = []
+        ctrl = hwp.HeadCtrl
+        while ctrl is not None:
+            if ctrl.CtrlID == "tbl":
+                tbl_ctrls.append(ctrl)
+            ctrl = ctrl.Next
+
+        footers = _footer_map_for_tables(hwp, tbl_ctrls)
+        for table, footer in zip(tables, footers):
+            if footer:
+                table.footer_text = footer
+                updated += 1
+        return updated
+    except Exception:
+        return 0
+    finally:
+        if hwp is not None:
+            try:
+                hwp.Clear(1)
+            except Exception:
+                pass
+            try:
+                hwp.Quit()
+            except Exception:
+                pass

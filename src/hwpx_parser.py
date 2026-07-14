@@ -15,7 +15,7 @@ from lxml import etree
 
 from .border_info import load_hwpx_border_fills
 from .footer_utils import (
-    estimate_page_number,
+    estimate_table_end_page,
     parse_section_footers,
     section_page_layout,
     select_footer_text,
@@ -98,9 +98,17 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
         if not section_names:
             raise ValueError(f"본문 섹션을 찾을 수 없습니다 (hwpx 파일이 맞는지 확인): {hwpx_path}")
 
+        # 한글의 「이전 구역 머리말/꼬리말과 동일」: 해당 구역에 footer 요소가
+        # 없으면 직전 구역의 꼬리말을 그대로 쓴다.
+        inherited_footers: list[tuple[str, str]] = []
+
         for sec_no, sec_name in enumerate(section_names):
             root = etree.fromstring(z.read(sec_name))
             section_footers = parse_section_footers(root)
+            if section_footers:
+                inherited_footers = section_footers
+            else:
+                section_footers = list(inherited_footers)
             content_height, hide_first_footer = section_page_layout(root)
             # 섹션 최상위 문단 목록 (표 직전 문단 탐색용)
             top_paragraphs = [child for child in root if child.tag == _tag("p")]
@@ -132,7 +140,9 @@ def parse_tables(hwpx_path: str | Path) -> list[Table]:
                             continue
                         preceding.append(_text_of(p))
                     table.preceding_texts = preceding
-                    page_no = estimate_page_number(top_paragraphs, host_p, content_height)
+                    page_no = estimate_table_end_page(
+                        top_paragraphs, host_p, tbl, content_height,
+                    )
                     table.footer_text = select_footer_text(
                         section_footers,
                         page_no,

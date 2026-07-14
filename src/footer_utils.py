@@ -83,12 +83,44 @@ def paragraph_bottom_vert(p_el: etree._Element) -> int:
     return max_bottom
 
 
+def table_height_hwpunit(tbl_el: etree._Element) -> int:
+    """표 전체 높이(HWPUNIT). 행별 최대 셀 높이를 합산."""
+    row_heights: dict[int, int] = {}
+    for tc in tbl_el.findall(f".//{hp_tag('tc')}"):
+        anc = tc.getparent()
+        nested = False
+        while anc is not None and anc is not tbl_el:
+            if anc.tag == hp_tag("tbl"):
+                nested = True
+                break
+            anc = anc.getparent()
+        if nested:
+            continue
+        addr = tc.find(hp_tag("cellAddr"))
+        size = tc.find(hp_tag("cellSz"))
+        span = tc.find(hp_tag("cellSpan"))
+        if addr is None or size is None:
+            continue
+        row = int(addr.get("rowAddr", 0))
+        row_span = int(span.get("rowSpan", 1)) if span is not None else 1
+        height = int(size.get("height", 0))
+        if row_span != 1 or height <= 0:
+            continue
+        row_heights[row] = max(row_heights.get(row, 0), height)
+    if row_heights:
+        return sum(row_heights.values())
+    sz = tbl_el.find(hp_tag("sz"))
+    if sz is not None:
+        return int(sz.get("height", 0))
+    return 0
+
+
 def estimate_page_number(
     top_paragraphs: list[etree._Element],
     host_p: etree._Element | None,
     content_height: int,
 ) -> int:
-    """표가 속한 문단까지의 레이아웃 힌트로 쪽 번호를 추정한다."""
+    """문단 시작 위치까지의 쪽 번호를 추정한다."""
     if host_p is None:
         return 1
     if content_height <= 0:
@@ -96,16 +128,51 @@ def estimate_page_number(
 
     page = 1
     for p in top_paragraphs:
-        if p.get("pageBreak", "0") == "1" and p is not host_p:
+        # pageBreak=1 이면 이 문단부터 새 쪽 → 표 host 문단에도 적용
+        if p.get("pageBreak", "0") == "1":
             page += 1
         if p is host_p:
             break
 
-    bottom = paragraph_bottom_vert(host_p)
-    while bottom > content_height:
+    segs = list(host_p.iter(hp_tag("lineseg")))
+    start_vert = int(segs[0].get("vertpos", 0)) if segs else 0
+    while start_vert >= content_height:
         page += 1
-        bottom -= content_height
+        start_vert -= content_height
     return max(page, 1)
+
+
+def estimate_table_end_page(
+    top_paragraphs: list[etree._Element],
+    host_p: etree._Element | None,
+    tbl_el: etree._Element | None,
+    content_height: int,
+) -> int:
+    """표가 끝나는 쪽 번호를 추정한다 (여러 쪽에 걸치면 마지막 쪽)."""
+    start_page = estimate_page_number(top_paragraphs, host_p, content_height)
+    if content_height <= 0 or host_p is None:
+        return start_page
+
+    segs = list(host_p.iter(hp_tag("lineseg")))
+    start_vert = int(segs[0].get("vertpos", 0)) if segs else 0
+    space_on_first = max(content_height - (start_vert % content_height), 1)
+
+    end_from_lineseg = start_page
+    bottom = paragraph_bottom_vert(host_p)
+    if bottom > start_vert:
+        height_in_para = bottom - start_vert
+        if height_in_para > space_on_first:
+            overflow = height_in_para - space_on_first
+            end_from_lineseg = start_page + 1 + overflow // content_height
+
+    end_from_height = start_page
+    if tbl_el is not None:
+        th = table_height_hwpunit(tbl_el)
+        if th > space_on_first:
+            overflow = th - space_on_first
+            end_from_height = start_page + 1 + overflow // content_height
+
+    return max(start_page, end_from_lineseg, end_from_height)
 
 
 def select_footer_text(
