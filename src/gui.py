@@ -478,8 +478,8 @@ class MainWindow(QMainWindow):
             "해제: 1행부터 표 내용만 (기본 권장)")
         self.chk_footer = QCheckBox("표 아래에 꼬리말 넣기")
         self.chk_footer.setToolTip(
-            "표가 있는 페이지의 꼬리말을 엑셀 표 바로 아래 행에 넣습니다.\n"
-            "줄바꿈과 순서는 원문 그대로 유지합니다.")
+            "표가 있는 쪽의 꼬리말을 엑셀 표 바로 아래 행에 넣습니다.\n"
+            "줄바꿈·순서는 원문 그대로이며, .hwpx는 문서 XML에서 읽습니다.")
         self.chk_visual_merge = QCheckBox("숨은 가로선 셀 합치기")
         self.chk_visual_merge.setToolTip(
             "한글에서 가로 구분선이 없어 한 칸처럼 보이는 셀을,\n"

@@ -14,11 +14,17 @@ from pathlib import Path
 from lxml import etree
 
 from .border_info import parse_hml_border_fills, resolve_hml_cell_borders
+from .footer_utils import select_footer_text
 from .models import Cell, Table
 
 _MAX_FOOTER_PARAS = 50
 
 _XML_DECL = re.compile(r"^\s*<\?xml[^>]*\?>")
+_FOOTER_BLOCK = re.compile(r"<FOOTER\b[\s\S]*?</FOOTER>", re.IGNORECASE)
+_SECTION_SPLIT = re.compile(r"(?=<SECTION[\s>])", re.IGNORECASE)
+_CHAR_TEXT = re.compile(r"<CHAR[^>]*>([^<]*)</CHAR>", re.IGNORECASE)
+_P_BLOCK = re.compile(r"<P\b[\s\S]*?</P>", re.IGNORECASE)
+_APPLY_PAGE = re.compile(r'ApplyPageType="([^"]*)"', re.IGNORECASE)
 
 
 def read_tables_via_com(path: str | Path, visible: bool = False) -> list[Table]:
@@ -57,7 +63,7 @@ def read_tables_via_com(path: str | Path, visible: bool = False) -> list[Table]:
             )
 
         tables: list[Table] = []
-        tbl_ctrls = []
+        tbl_ctrls: list = []
         idx = 0
         ctrl = hwp.HeadCtrl
         while ctrl is not None:
@@ -68,10 +74,11 @@ def read_tables_via_com(path: str | Path, visible: bool = False) -> list[Table]:
                     tbl_ctrls.append(ctrl)
                     idx += 1
             ctrl = ctrl.Next
+
+        # 꼬리말: Goto(찾아가기) 없이 문서 전체 HWPML2X의 <FOOTER>를 파싱한다.
         try:
-            footers = _footer_map_for_tables(hwp, tbl_ctrls)
-            for table, footer in zip(tables, footers):
-                table.footer_text = footer
+            full_xml = hwp.GetTextFile("HWPML2X", "") or ""
+            _assign_footers_from_hml(hwp, tables, tbl_ctrls, full_xml)
         except Exception:
             pass
         return tables
@@ -84,6 +91,99 @@ def read_tables_via_com(path: str | Path, visible: bool = False) -> list[Table]:
             hwp.Quit()
         except Exception:
             pass
+
+
+def _footer_element_text_hml(footer_xml: str) -> str:
+    """HWPML <FOOTER> 블록에서 문단별 텍스트를 줄바꿈으로 이어 붙인다."""
+    lines: list[str] = []
+    for p in _P_BLOCK.findall(footer_xml):
+        text = "".join(_CHAR_TEXT.findall(p)).strip()
+        if text:
+            lines.append(text)
+    if not lines:
+        text = "".join(_CHAR_TEXT.findall(footer_xml)).strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def _parse_hml_section_footers(xml: str) -> list[list[tuple[str, str]]]:
+    """전체 HWPML2X에서 섹션별 (applyPageType, text) 꼬리말 목록을 추출."""
+    parts = _SECTION_SPLIT.split(xml)
+    result: list[list[tuple[str, str]]] = []
+    for part in parts:
+        if not part.lstrip().upper().startswith("<SECTION"):
+            continue
+        foots: list[tuple[str, str]] = []
+        for block in _FOOTER_BLOCK.findall(part):
+            apply = "BOTH"
+            m = _APPLY_PAGE.search(block)
+            if m:
+                apply = m.group(1).upper()
+            text = _footer_element_text_hml(block).strip()
+            if text:
+                foots.append((apply, text))
+        result.append(foots)
+    return result
+
+
+def _table_section_indices(hwp) -> list[int]:
+    """HeadCtrl 순서 기준으로 각 표의 구역(0-based) 인덱스를 반환."""
+    sec_i = -1
+    indices: list[int] = []
+    ctrl = hwp.HeadCtrl
+    while ctrl is not None:
+        if ctrl.CtrlID == "secd":
+            sec_i += 1
+        elif ctrl.CtrlID == "tbl":
+            indices.append(max(sec_i, 0))
+        ctrl = ctrl.Next
+    return indices
+
+
+def _assign_footers_from_hml(hwp, tables: list[Table], tbl_ctrls: list, full_xml: str) -> None:
+    """Goto 없이 HWPML <FOOTER> + 구역 상속으로 표 footer_text를 채운다."""
+    if not tables or not full_xml:
+        return
+
+    section_foots = _parse_hml_section_footers(full_xml)
+    if not section_foots and _FOOTER_BLOCK.search(full_xml):
+        # SECTION 래퍼가 약한 경우: 문서 순서 FOOTER만 모은다
+        foots: list[tuple[str, str]] = []
+        for block in _FOOTER_BLOCK.findall(full_xml):
+            apply = "BOTH"
+            m = _APPLY_PAGE.search(block)
+            if m:
+                apply = m.group(1).upper()
+            text = _footer_element_text_hml(block).strip()
+            if text:
+                foots.append((apply, text))
+        section_foots = [foots] if foots else []
+
+    # 이전 구역과 동일(꼬리말 없음) → 상속
+    effective: list[list[tuple[str, str]]] = []
+    inherited: list[tuple[str, str]] = []
+    for foots in section_foots:
+        if foots:
+            inherited = list(foots)
+            effective.append(list(foots))
+        else:
+            effective.append(list(inherited))
+
+    table_secs = _table_section_indices(hwp)
+    for i, table in enumerate(tables):
+        sec = table_secs[i] if i < len(table_secs) else 0
+        if sec >= len(effective):
+            sec = len(effective) - 1 if effective else 0
+        candidates = effective[sec] if effective else []
+        page_no = 1
+        if i < len(tbl_ctrls):
+            try:
+                page_no = _page_at_table_end(hwp, tbl_ctrls[i])
+            except Exception:
+                page_no = 1
+        table.section = sec
+        table.footer_text = select_footer_text(candidates, page_no)
 
 
 def _read_one_table(hwp, ctrl, idx: int) -> Table | None:
@@ -538,10 +638,11 @@ def enrich_footers_via_com(path: str | Path, tables: list[Table], visible: bool 
                 tbl_ctrls.append(ctrl)
             ctrl = ctrl.Next
 
-        footers = _footer_map_for_tables(hwp, tbl_ctrls)
-        for table, footer in zip(tables, footers):
-            if footer:
-                table.footer_text = footer
+        # Goto 없이 HWPML FOOTER 파싱 (찾아가기 팝업 방지)
+        full_xml = hwp.GetTextFile("HWPML2X", "") or ""
+        _assign_footers_from_hml(hwp, tables, tbl_ctrls, full_xml)
+        for table in tables:
+            if table.footer_text:
                 updated += 1
         return updated
     except Exception:

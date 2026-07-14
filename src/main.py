@@ -80,17 +80,10 @@ def process_file(
     logger.info(f"처리 시작: {path.name}")
 
     if zipfile.is_zipfile(path):
-        tables = parse_tables(path)  # 정상 HWPX → XML 직접 파싱 (한글 불필요)
-        # 페이지별·표 끝 쪽 꼬리말은 XML 추정만으로는 부족할 수 있어,
-        # 한글이 있으면 COM으로 표 끝 페이지 꼬리말을 다시 읽는다.
-        if include_footer and tables:
-            try:
-                from .hwp_com_reader import enrich_footers_via_com
-                n = enrich_footers_via_com(path, tables)
-                if n:
-                    logger.info(f"  꼬리말 COM 보정: 표 {n}개 (끝 페이지 기준)")
-            except Exception:
-                logger.debug("  꼬리말 COM 보정 생략 (한글 없음 또는 실패)", exc_info=True)
+        # 정상 HWPX → XML 직접 파싱 (한글 불필요).
+        # 꼬리말도 구역 XML(+이전 구역 상속)로 채운다.
+        # COM Goto 보정은 한글 '찾아가기' 팝업을 띄우므로 사용하지 않는다.
+        tables = parse_tables(path)
     else:
         # DRM 암호화 또는 구형 HWP → 한글 COM으로 문서를 열어 표를 읽음
         logger.info("  HWPX(ZIP) 형식이 아님 (DRM/구형 HWP 추정) → 한글로 문서를 열어 표를 읽습니다...")
